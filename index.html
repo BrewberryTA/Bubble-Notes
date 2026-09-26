@@ -1134,7 +1134,7 @@ function setMode(m, moveCam = true) {
   if (S.sel) refreshPanel();
   if (m === '2d') {
     goal.phi = PHI_2D;
-    let th = goal.theta % (Math.PI * 2); if (th > Math.PI) th -= Math.PI * 2; if (th < -Math.PI) th += Math.PI;
+    let th = goal.theta % (Math.PI * 2); if (th > Math.PI) th -= Math.PI * 2; if (th < -Math.PI) th += Math.PI * 2;
     cam.theta = cam.theta - goal.theta + th; goal.theta = 0;
     goal.target.y = 0;
     if (S.sel && S.sel.type === 'node') { const n = S.nodes.get(S.sel.id); if (n && n.parentId) { const r = rootOf(n); goal.target.set(r.x, 0, r.z); } }
@@ -1845,7 +1845,7 @@ function renderMenu() {
     }
     if (menuState.confirming === sp.id) {
       const c = document.createElement('div'); c.className = 'sm-confirm';
-      const t = document.createElement('span'); t.textContent = `Delete “${spaceName(sp.id)}” and all its notes?`;
+      const t = document.createElement('span'); t.textContent = `Delete "${spaceName(sp.id)}" and all its notes?`;
       const no = document.createElement('button'); no.textContent = 'Cancel'; no.onclick = () => { menuState.confirming = null; renderMenu(); };
       const yes = document.createElement('button'); yes.className = 'go'; yes.textContent = 'Delete'; yes.onclick = () => deleteCanvas(sp.id);
       c.append(t, no, yes); row.appendChild(c); smList.appendChild(row); continue;
@@ -1896,7 +1896,7 @@ async function deleteCanvas(id) {
   if (id === S.spaceId) { const next = list.find(x => x.id !== id); for (const n of S.nodes.values()) S.tomb.add(n.id); switchSpace(next.id); }
   await Store.deleteSpace(id);
   renderSpaceUI(); renderMenu();
-  toast(`Deleted canvas “${name}”`);
+  toast(`Deleted canvas "${name}"`);
 }
 function jumpPortal(n) {
   const target = n.portal;
@@ -1923,7 +1923,7 @@ const escapeHtml = t => String(t).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<':
 $('fPortal').addEventListener('change', e => {
   const n = selNode(); if (!n) return;
   let v = e.target.value;
-  if (v === '__new') { const sp = createCanvas((n.title || '').trim().slice(0, 80)); v = sp.id; toast(`Created canvas “${spaceName(sp.id)}”`); }
+  if (v === '__new') { const sp = createCanvas((n.title || '').trim().slice(0, 80)); v = sp.id; toast(`Created canvas "${spaceName(sp.id)}"`); }
   n.portal = v || null; Store.saveNode(n, 0); refreshPanel();
 });
 $('aPortal').onclick = () => { const n = selNode(); if (n) jumpPortal(n); };
