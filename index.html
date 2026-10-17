@@ -1284,13 +1284,13 @@ function frameAll() {
   goal.target.copy(c); if (S.mode === '2d') goal.target.y = 0;
   goal.dist = THREE.MathUtils.clamp(span / (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2))), 10, 400);
 }
-function focusNode(id) {
+function focusNode(id, keepDist = false) {
   const n = S.nodes.get(id); if (!n) return;
   const v = V.get(id);
   if (!isShown(n)) { const r = rootOf(n); goal.target.set(r.x, 0, r.z); return; }
   goal.target.copy(targetPos(n, new THREE.Vector3()));
   if (S.mode === '2d') goal.target.y = 0;
-  goal.dist = Math.min(goal.dist, Math.max(10, 26 * radiusOf(n) + (n.exploded ? 8 : 0)));
+  if (!keepDist) goal.dist = Math.min(goal.dist, Math.max(10, 26 * radiusOf(n) + (n.exploded ? 8 : 0)));
 }
 
 /* =====================================================================
@@ -1636,6 +1636,7 @@ function tap(x, y, type) {
     const n = S.nodes.get(hit.id);
     if (dbl) { if (n.exploded && S.mode === '3d') branch(n.id); else explode(n.id, true); return; }
     select({ type: 'node', id: hit.id });
+    if (S.mode === '3d') focusNode(hit.id, true);   // re-anchor the orbit pivot on the clicked note; zoom stays put
   }
 }
 let hoverRaf = 0;
