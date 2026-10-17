@@ -242,6 +242,9 @@
   .body-ed ul, .body-ed ol { margin: 4px 0; padding-left: 20px; }
   .body-ed p { margin: 0 0 6px; }
   .body-ed a { color: var(--accent); text-decoration: underline; cursor: pointer; }
+  .note-links { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .note-links a { display: inline-flex; align-items: center; gap: 5px; max-width: 100%; padding: 9px 12px; min-height: 40px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--accent); font-size: 13px; text-decoration: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .note-links a:active { background: var(--line-2); }
   .body-ed img { display: block; max-width: 100%; height: auto; border-radius: 8px; margin: 6px 0; cursor: zoom-in; background: var(--line-2); min-height: 28px; }
   .rt-link { display: flex; gap: 6px; margin-bottom: 6px; }
   .rt-link input { flex: 1; min-width: 0; font: inherit; font-size: 13px; padding: 6px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
@@ -435,6 +438,7 @@
         </div>
         <div class="rt-link" id="rtLink" hidden><input id="rtUrl" type="url" placeholder="https://…" autocomplete="off" aria-label="Link address"><button id="rtLinkOk">Add</button></div>
         <div class="body-ed" id="fBody" contenteditable="true" data-ph="Write the note…" aria-label="Note body" role="textbox" aria-multiline="true"></div>
+        <div class="note-links" id="fLinks" hidden></div>
       </div>
       <div>
         <span class="fl">Tags</span>
@@ -1785,6 +1789,19 @@ function safeUrl(u) {
 
 // ---- images: stored as separate docs (spaces/{id}/images/{imgId}), referenced from notes as <img data-img="id"> ----
 const imgCache = new Map();
+/* tappable link buttons under the editor: anchors inside a contenteditable are unreliable to tap on iPad */
+function renderNoteLinks(html) {
+  const box = $('fLinks'); if (!box) return;
+  const doc = new DOMParser().parseFromString('<div>' + (html || '') + '</div>', 'text/html');
+  const seen = new Set(), out = [];
+  const add = (href, label) => { const h = safeUrl(href); if (!h || seen.has(h)) return; seen.add(h); out.push([h, (label || '').trim() || h.replace(/^https?:\/\//, '')]); };
+  doc.querySelectorAll('a[href]').forEach(a => add(a.getAttribute('href'), a.textContent));
+  const txt = doc.body.textContent || '';
+  (txt.match(/https?:\/\/[^\s<>"')]+|(?:[a-z0-9-]+\.)+(?:com|org|net|io|gov|edu)\/[^\s<>"')]+/gi) || []).forEach(u => add(u.replace(/[.,;:]+$/, ''), ''));
+  box.textContent = '';
+  for (const [h, l] of out.slice(0, 12)) { const a = document.createElement('a'); a.href = h; a.target = '_blank'; a.rel = 'noopener noreferrer'; a.textContent = '↗ ' + l; box.appendChild(a); }
+  box.hidden = !out.length;
+}
 function hydrateImages(root) {
   for (const im of root.querySelectorAll('img[data-img]')) {
     const id = im.getAttribute('data-img');
@@ -1860,6 +1877,7 @@ function refreshPanel(remote = false) {
   const ti = $('fTitle'), bo = $('fBody');
   if (document.activeElement !== ti) ti.value = n.title || '';
   if (document.activeElement !== bo && (!remote || bo.innerHTML !== n.body)) { bo.innerHTML = sanitize(n.body || ''); hydrateImages(bo); }
+  renderNoteLinks(n.body);
   renderTags(n);
   renderPortalField(n);
   swEl.querySelectorAll('.sw').forEach(b => b.setAttribute('aria-checked', b.dataset.c === (n.color || 'cloud')));
@@ -1898,7 +1916,7 @@ function renderTags(n) {
 }
 $('fTitle').addEventListener('input', e => { const n = selNode(); if (!n) return; n.title = e.target.value.slice(0, 200); Store.saveNode(n, 500); });
 $('fTitle').addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); $('fBody').focus(); } });
-$('fBody').addEventListener('input', () => { const n = selNode(); if (!n) return; n.body = sanitize($('fBody').innerHTML).slice(0, 100000); Store.saveNode(n, 700); });
+$('fBody').addEventListener('input', () => { const n = selNode(); if (!n) return; n.body = sanitize($('fBody').innerHTML).slice(0, 100000); renderNoteLinks(n.body); Store.saveNode(n, 700); });
 document.querySelectorAll('.rt-bar button').forEach(b => {
   b.addEventListener('mousedown', e => e.preventDefault());
   b.onclick = () => { $('fBody').focus(); try { document.execCommand(b.dataset.cmd, false, null); } catch {} $('fBody').dispatchEvent(new Event('input')); };
