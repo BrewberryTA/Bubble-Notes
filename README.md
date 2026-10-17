@@ -26,7 +26,3 @@ The app looks for a `window.claude.use('db')` runtime (the Claude Artifacts plat
 - **Notes** — title, rich text body, tags, and 7 color swatches.
 
 See `index.html` for the full implementation (single file, vanilla JS + Three.js).
-
-## Syncing across devices (GitHub Pages)
-
-Open the canvas menu and choose **Sync across devices…**, then paste a fine-grained GitHub token for this repo with *Contents: read and write*. Canvases are mirrored as JSON in `data/` and merged note by note (newest edit wins). The token stays in that browser only. Note: the repo is public, so synced canvases are public too. Deletions do not propagate between devices.
