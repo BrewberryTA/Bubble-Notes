@@ -279,6 +279,13 @@
     max-width: calc(100vw - 32px); background: var(--danger-soft); color: var(--danger); border: 1px solid #F3C9C5;
     padding: 10px 14px; border-radius: var(--r-md); font-size: 13px; z-index: 50;
   }
+  .fb-gate { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; background: color-mix(in srgb, var(--bg) 88%, transparent); padding: 16px; }
+  .fb-card { background: var(--surface); border: 1px solid var(--line); border-radius: 16px; padding: 22px; max-width: 360px; width: 100%; display: flex; flex-direction: column; gap: 10px; color: var(--ink); box-shadow: 0 12px 40px rgba(0,0,0,.12); }
+  .fb-card p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
+  .fb-card .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .fb-card button { font: inherit; font-size: 13px; padding: 8px 12px; border-radius: 10px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); cursor: pointer; }
+  .fb-card button.go { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .fb-card .fb-err { color: var(--danger); }
   .loading {
     position: absolute; inset: 0; display: grid; place-items: center; pointer-events: none; opacity: 1;
     font-family: var(--mono); font-size: 11px; color: var(--muted); letter-spacing: .08em; text-transform: uppercase;
@@ -451,6 +458,9 @@
 </div>
 
 <script src="https://cdn.jsdelivr.net/npm/three@0.159.0/build/three.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore-compat.js"></script>
 <script>
 (() => {
 'use strict';
@@ -677,6 +687,65 @@ function makeWriter(refFor) {
   };
 }
 
+
+// ---- Firebase sync: Firestore under users/{uid}/o_*, Google sign-in. Exposes the same db API the Store already uses. ----
+const FB_CFG = {
+  apiKey: 'AIzaSyDQhn0tBf2lsyqTgW00wSPRRV4q38IQBv0',
+  authDomain: 'invisible-frontiers.firebaseapp.com',
+  projectId: 'invisible-frontiers',
+  storageBucket: 'invisible-frontiers.firebasestorage.app',
+  messagingSenderId: '569553021651',
+  appId: '1:569553021651:web:af66ffc3668722b84d4226',
+};
+const FB = {
+  async connect() {
+    if (typeof firebase === 'undefined') return null;
+    try {
+      if (!firebase.apps.length) firebase.initializeApp(FB_CFG);
+      const auth = firebase.auth();
+      let user = await new Promise(res => { const off = auth.onAuthStateChanged(u => { off(); res(u); }); });
+      if (!user) user = await this.gate(auth);
+      if (!user) return null;
+      const fs = firebase.firestore();
+      try { await fs.enablePersistence({ synchronizeTabs: true }); } catch {}
+      const pre = 'users/' + user.uid + '/o_';
+      return { fs, pre, user, collection: p => fs.collection(pre + p), doc: p => fs.doc(pre + p) };
+    } catch (e) { return null; }
+  },
+  gate(auth) {
+    return new Promise(resolve => {
+      const ov = document.createElement('div'); ov.className = 'fb-gate';
+      ov.innerHTML = '<div class="fb-card" role="dialog" aria-label="Sign in"><b>Orrery Notes</b><p>Sign in with Google to sync your canvases across devices.</p><div class="row"><button class="go" id="fbGo">Sign in with Google</button><button id="fbSkip">This device only</button></div><p class="fb-err" id="fbErr"></p></div>';
+      document.body.appendChild(ov);
+      ov.querySelector('#fbSkip').onclick = () => { ov.remove(); resolve(null); };
+      ov.querySelector('#fbGo').onclick = async () => {
+        try { const r = await auth.signInWithPopup(new firebase.auth.GoogleAuthProvider()); ov.remove(); resolve(r.user); }
+        catch (e) { ov.querySelector('#fbErr').textContent = e && e.code === 'auth/unauthorized-domain' ? 'This site is not an authorized domain in Firebase Auth yet.' : 'Sign-in failed. Try again.'; }
+      };
+    });
+  },
+  // First sign-in on a device that already holds local canvases: upload the ones Firestore lacks.
+  async migrateLocal(db) {
+    let sp = {}; try { sp = JSON.parse(lsGet('orrery.spaces') || '{}') || {}; } catch {}
+    const ids = new Set(Object.keys(sp)); if (lsGet('orrery.v1')) ids.add(DEFAULT_SPACE);
+    if (!ids.size) return;
+    const remote = new Set((await db.collection(COL_SPACES).get()).docs.map(d => d.id));
+    for (const id of ids) {
+      if (remote.has(id) || (sp[id] && sp[id].deleted)) continue;
+      let data = null; try { data = JSON.parse(lsGet(id === DEFAULT_SPACE ? 'orrery.v1' : 'orrery.v1.' + id) || 'null'); } catch {}
+      const t = now();
+      const spaceDoc = clean(Object.assign({ id, name: '', createdAt: t, updatedAt: t, v: SCHEMA_V }, sp[id] || {}));
+      const writes = [];
+      for (const n of Object.values((data && data.nodes) || {})) writes.push([db.doc(`${colNodes(id)}/${n.id}`), clean(n)]);
+      for (const e of Object.values((data && data.edges) || {})) writes.push([db.doc(`${colEdges(id)}/${e.id}`), clean(e)]);
+      for (let i = 0; i < writes.length; i += 400) {
+        const b = db.fs.batch(); for (const [ref, d] of writes.slice(i, i + 400)) b.set(ref, d); await b.commit();
+      }
+      await db.doc(`${COL_SPACES}/${id}`).set(spaceDoc);   // written last so an interrupted upload retries next time
+    }
+  },
+};
+
 const Store = {
   kind: 'memory',
   db: null, w: null, unsub: [], gen: 0, onData: null,
@@ -684,6 +753,7 @@ const Store = {
     this.onData = onData;
     let db = null;
     try { db = window.claude && window.claude.use ? await window.claude.use('db') : null; } catch { db = null; }
+    if (!db) { setSync('saving', 'Signing in'); db = await FB.connect(); if (db) { try { await FB.migrateLocal(db); } catch (e) { toast('Could not upload local canvases yet. They are still on this device.'); } } }
     if (db) {
       this.kind = 'db'; this.db = db;
       this.w = makeWriter(key => db.doc(key));

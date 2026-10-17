@@ -26,3 +26,7 @@ The app looks for a `window.claude.use('db')` runtime (the Claude Artifacts plat
 - **Notes** — title, rich text body, tags, and 7 color swatches.
 
 See `index.html` for the full implementation (single file, vanilla JS + Three.js).
+
+## Syncing across devices
+
+On GitHub Pages the app signs in with Google and stores canvases in Firebase Firestore (project `invisible-frontiers`, under `users/{uid}/o_*`). On first sign-in, canvases already on that device are uploaded. Choosing "This device only" keeps the old localStorage behaviour. Firestore rules must restrict `users/{uid}/**` to the signed-in owner.
