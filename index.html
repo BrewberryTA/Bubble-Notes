@@ -241,6 +241,13 @@
   .body-ed:empty::before { content: attr(data-ph); color: var(--muted); }
   .body-ed ul, .body-ed ol { margin: 4px 0; padding-left: 20px; }
   .body-ed p { margin: 0 0 6px; }
+  .body-ed a { color: var(--accent); text-decoration: underline; cursor: pointer; }
+  .body-ed img { display: block; max-width: 100%; height: auto; border-radius: 8px; margin: 6px 0; cursor: zoom-in; background: var(--line-2); min-height: 28px; }
+  .rt-link { display: flex; gap: 6px; margin-bottom: 6px; }
+  .rt-link input { flex: 1; min-width: 0; font: inherit; font-size: 13px; padding: 6px 9px; border-radius: 8px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+  .rt-link button { width: auto; padding: 0 10px; border: 1px solid var(--line); }
+  .lightbox { position: fixed; inset: 0; z-index: 120; background: rgba(8,10,14,.86); display: grid; place-items: center; padding: 16px; cursor: zoom-out; }
+  .lightbox img { max-width: 100%; max-height: 100%; border-radius: 10px; }
   .fl { font-family: var(--mono); font-size: 10.5px; color: var(--muted); letter-spacing: .06em; text-transform: uppercase; margin-bottom: 6px; display: block; }
   .tags { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; border: 1px solid var(--line); border-radius: var(--r-md); padding: 6px; }
   .tags:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
@@ -418,7 +425,15 @@
           <button data-cmd="italic" title="Italic" aria-label="Italic"><i>I</i></button>
           <button data-cmd="insertUnorderedList" title="Bulleted list" aria-label="Bulleted list">•</button>
           <button data-cmd="insertOrderedList" title="Numbered list" aria-label="Numbered list">1.</button>
+          <button id="rtLinkBtn" title="Add link" aria-label="Add link">
+            <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.5 9.5a3 3 0 0 0 4.2 0l2-2a3 3 0 0 0-4.2-4.2l-.8.8M9.5 6.5a3 3 0 0 0-4.2 0l-2 2a3 3 0 0 0 4.2 4.2l.8-.8" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          </button>
+          <button id="rtImgBtn" title="Add image" aria-label="Add image">
+            <svg width="15" height="15" viewBox="0 0 16 16" aria-hidden="true"><rect x="2" y="3" width="12" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="6" cy="7" r="1.1" fill="currentColor"/><path d="M3 12l3.5-3.2 2.5 2.2 2-1.8L14 12" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+          </button>
+          <input type="file" id="rtFile" accept="image/*" multiple hidden>
         </div>
+        <div class="rt-link" id="rtLink" hidden><input id="rtUrl" type="url" placeholder="https://…" autocomplete="off" aria-label="Link address"><button id="rtLinkOk">Add</button></div>
         <div class="body-ed" id="fBody" contenteditable="true" data-ph="Write the note…" aria-label="Note body" role="textbox" aria-multiline="true"></div>
       </div>
       <div>
@@ -484,6 +499,7 @@ const DEFAULT_SPACE = 'personal';
 const COL_SPACES = 'spaces';
 const colNodes = sp => `spaces/${sp}/nodes`;
 const colEdges = sp => `spaces/${sp}/edges`;
+const colImages = sp => `spaces/${sp}/images`;
 
 /* ---------------- geometry constants ---------------- */
 const GRID = 1;
@@ -857,12 +873,22 @@ const Store = {
   deleteNode(id) { S.tomb.add(id); if (this.kind === 'db') this.w.del(`${colNodes(S.spaceId)}/${id}`); else this._persistLocal(); },
   saveEdge(e) { e.updatedAt = now(); if (this.kind === 'db') this.w.set(`${colEdges(S.spaceId)}/${e.id}`, clean(e), 0); else this._persistLocal(); },
   deleteEdge(id) { S.tomb.add(id); if (this.kind === 'db') this.w.del(`${colEdges(S.spaceId)}/${id}`); else this._persistLocal(); },
+  saveImage(id, doc) {
+    if (this.kind === 'db') { this.w.set(`${colImages(S.spaceId)}/${id}`, doc, 0); return true; }
+    try { localStorage.setItem('orrery.img.' + id, doc.data); return true; } catch { return false; }
+  },
+  async loadImage(id) {
+    if (this.kind === 'db') {
+      try { const snap = await this.db.doc(`${colImages(S.spaceId)}/${id}`).get(); const d = snap && snap.data ? snap.data() : null; return d && d.data || ''; } catch { return ''; }
+    }
+    return lsGet('orrery.img.' + id) || '';
+  },
   saveSpace(sp) { sp.updatedAt = now(); S.spaces.set(sp.id, sp); if (this.kind === 'db') this.w.set(`${COL_SPACES}/${sp.id}`, clean(sp), 300); else this._persistSpaces(); },
   async deleteSpace(id) {
     if (id === DEFAULT_SPACE) { const sp = { id, name: '', createdAt: 0, deleted: true, v: SCHEMA_V }; this.saveSpace(sp); }
     else { S.tomb.add(id); S.spaces.delete(id); }
     if (this.kind === 'db') {
-      for (const col of [colNodes(id), colEdges(id)]) {
+      for (const col of [colNodes(id), colEdges(id), colImages(id)]) {
         try { const snap = await this.db.collection(col).get(); for (const d of snap.docs) { try { await this.db.doc(`${col}/${d.id}`).delete(); } catch {} } } catch {}
       }
       if (id !== DEFAULT_SPACE) this.w.del(`${COL_SPACES}/${id}`);
@@ -1731,7 +1757,7 @@ function select(sel, focusTitle = false) {
 
 function sanitize(html) {
   const doc = new DOMParser().parseFromString('<div>' + (html || '') + '</div>', 'text/html');
-  const ok = new Set(['B', 'STRONG', 'I', 'EM', 'U', 'UL', 'OL', 'LI', 'BR', 'P', 'DIV']);
+  const ok = new Set(['B', 'STRONG', 'I', 'EM', 'U', 'UL', 'OL', 'LI', 'BR', 'P', 'DIV', 'A', 'IMG']);
   const walk = el => {
     for (const c of [...el.childNodes]) {
       if (c.nodeType === 3) continue;
@@ -1739,11 +1765,76 @@ function sanitize(html) {
         if (c.nodeType === 1 && !['SCRIPT', 'STYLE', 'IFRAME', 'OBJECT'].includes(c.tagName)) { walk(c); while (c.firstChild) el.insertBefore(c.firstChild, c); }
         c.remove(); continue;
       }
+      const keep = {};
+      if (c.tagName === 'A') { const h = safeUrl(c.getAttribute('href')); if (h) { keep.href = h; keep.target = '_blank'; keep.rel = 'noopener noreferrer'; } }
+      if (c.tagName === 'IMG') { const id = c.getAttribute('data-img'); if (!/^[A-Za-z0-9_-]{1,40}$/.test(id || '')) { c.remove(); continue; } keep['data-img'] = id; keep.alt = ''; }
       for (const a of [...c.attributes]) c.removeAttribute(a.name);
+      for (const k in keep) c.setAttribute(k, keep[k]);
+      if (c.tagName === 'A' && !keep.href) { walk(c); while (c.firstChild) el.insertBefore(c.firstChild, c); c.remove(); continue; }
       walk(c);
     }
   };
   const root = doc.body.firstChild; walk(root); return root.innerHTML;
+}
+function safeUrl(u) {
+  u = (u || '').trim(); if (!u) return '';
+  if (!/^[a-z][a-z0-9+.-]*:/i.test(u)) u = 'https://' + u;
+  try { const x = new URL(u); return ['http:', 'https:', 'mailto:'].includes(x.protocol) ? x.href : ''; } catch { return ''; }
+}
+
+// ---- images: stored as separate docs (spaces/{id}/images/{imgId}), referenced from notes as <img data-img="id"> ----
+const imgCache = new Map();
+function hydrateImages(root) {
+  for (const im of root.querySelectorAll('img[data-img]')) {
+    const id = im.getAttribute('data-img');
+    if (imgCache.has(id)) { im.src = imgCache.get(id); continue; }
+    Store.loadImage(id).then(url => { if (url) { imgCache.set(id, url); if (im.isConnected) im.src = url; } });
+  }
+}
+function fileToDataUrl(file) {
+  return new Promise((res, rej) => {
+    const url = URL.createObjectURL(file), im = new Image();
+    im.onload = () => {
+      URL.revokeObjectURL(url);
+      let side = Math.min(1600, Math.max(im.naturalWidth, im.naturalHeight)), q = 0.82, out = '';
+      for (let i = 0; i < 8; i++) {
+        const k = side / Math.max(im.naturalWidth, im.naturalHeight), w = Math.max(1, Math.round(im.naturalWidth * k)), h = Math.max(1, Math.round(im.naturalHeight * k));
+        const c = document.createElement('canvas'); c.width = w; c.height = h;
+        const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, w, h); x.drawImage(im, 0, 0, w, h);
+        out = c.toDataURL('image/jpeg', q);
+        if (out.length <= 850000) return res({ data: out, w, h });
+        if (q > 0.5) q -= 0.12; else side = Math.round(side * 0.75);
+      }
+      rej(new Error('too big'));
+    };
+    im.onerror = () => { URL.revokeObjectURL(url); rej(new Error('bad image')); };
+    im.src = url;
+  });
+}
+async function addImages(files) {
+  const n = selNode(); if (!n) return;
+  const list = [...files].filter(f => f && f.type && f.type.startsWith('image/'));
+  if (!list.length) { toast('Only image files can be added'); return; }
+  const bo = $('fBody');
+  for (const f of list) {
+    try {
+      const { data, w, h } = await fileToDataUrl(f);
+      const id = 'i' + uid().slice(0, 14);
+      const ok = Store.saveImage(id, { id, data, w, h, createdAt: now(), updatedAt: now(), v: SCHEMA_V });
+      if (!ok) { toast('Not enough space on this device for that image'); continue; }
+      imgCache.set(id, data);
+      bo.focus();
+      document.execCommand('insertHTML', false, '<img data-img="' + id + '" alt="" src="' + data + '"><br>');
+    } catch { toast('Could not add ' + (f.name || 'that image')); }
+  }
+  bo.dispatchEvent(new Event('input'));
+}
+function openLightbox(src) {
+  const lb = document.createElement('div'); lb.className = 'lightbox';
+  const im = document.createElement('img'); im.src = src; lb.appendChild(im);
+  const close = () => { lb.remove(); document.removeEventListener('keydown', onKey, true); };
+  const onKey = e => { if (e.key === 'Escape') { e.stopPropagation(); close(); } };
+  lb.onclick = close; document.addEventListener('keydown', onKey, true); document.body.appendChild(lb);
 }
 
 function refreshPanel(remote = false) {
@@ -1767,7 +1858,7 @@ function refreshPanel(remote = false) {
   $('pEyebrow').textContent = n.parentId ? `Orbit ${slotName(n.slot)} · depth ${d}` : 'On the plane';
   const ti = $('fTitle'), bo = $('fBody');
   if (document.activeElement !== ti) ti.value = n.title || '';
-  if (document.activeElement !== bo && (!remote || bo.innerHTML !== n.body)) bo.innerHTML = sanitize(n.body || '');
+  if (document.activeElement !== bo && (!remote || bo.innerHTML !== n.body)) { bo.innerHTML = sanitize(n.body || ''); hydrateImages(bo); }
   renderTags(n);
   renderPortalField(n);
   swEl.querySelectorAll('.sw').forEach(b => b.setAttribute('aria-checked', b.dataset.c === (n.color || 'cloud')));
@@ -1810,6 +1901,45 @@ $('fBody').addEventListener('input', () => { const n = selNode(); if (!n) return
 document.querySelectorAll('.rt-bar button').forEach(b => {
   b.addEventListener('mousedown', e => e.preventDefault());
   b.onclick = () => { $('fBody').focus(); try { document.execCommand(b.dataset.cmd, false, null); } catch {} $('fBody').dispatchEvent(new Event('input')); };
+});
+// links
+let savedRange = null;
+const rtLink = $('rtLink'), rtUrl = $('rtUrl');
+$('rtLinkBtn').addEventListener('mousedown', e => e.preventDefault());
+$('rtLinkBtn').onclick = () => {
+  const sel = getSelection();
+  savedRange = sel.rangeCount && $('fBody').contains(sel.anchorNode) ? sel.getRangeAt(0).cloneRange() : null;
+  rtLink.hidden = !rtLink.hidden; if (!rtLink.hidden) { rtUrl.value = ''; rtUrl.focus(); }
+};
+function applyLink() {
+  const url = safeUrl(rtUrl.value); if (!url) { toast('Enter a web address'); return; }
+  $('fBody').focus();
+  const sel = getSelection(); sel.removeAllRanges();
+  if (savedRange) sel.addRange(savedRange); else { const r = document.createRange(); r.selectNodeContents($('fBody')); r.collapse(false); sel.addRange(r); }
+  try {
+    if (sel.isCollapsed) { const t = document.createElement('div'); t.textContent = url; document.execCommand('insertHTML', false, '<a href="' + t.innerHTML.replace(/"/g, '&quot;') + '">' + t.innerHTML + '</a>&nbsp;'); }
+    else document.execCommand('createLink', false, url);
+  } catch {}
+  rtLink.hidden = true; $('fBody').dispatchEvent(new Event('input'));
+}
+$('rtLinkOk').onclick = applyLink;
+rtUrl.addEventListener('keydown', e => { if (e.key === 'Enter') { e.preventDefault(); applyLink(); } else if (e.key === 'Escape') { e.stopPropagation(); rtLink.hidden = true; } });
+// images
+$('rtImgBtn').addEventListener('mousedown', e => e.preventDefault());
+$('rtImgBtn').onclick = () => $('rtFile').click();
+$('rtFile').onchange = e => { const f = [...e.target.files]; e.target.value = ''; addImages(f); };
+$('fBody').addEventListener('paste', e => {
+  const files = [...(e.clipboardData && e.clipboardData.files || [])].filter(f => f.type.startsWith('image/'));
+  if (files.length) { e.preventDefault(); addImages(files); }
+});
+$('fBody').addEventListener('dragover', e => { if (e.dataTransfer && [...e.dataTransfer.types].includes('Files')) e.preventDefault(); });
+$('fBody').addEventListener('drop', e => {
+  const files = [...(e.dataTransfer && e.dataTransfer.files || [])].filter(f => f.type.startsWith('image/'));
+  if (files.length) { e.preventDefault(); addImages(files); }
+});
+$('fBody').addEventListener('click', e => {
+  const a = e.target.closest && e.target.closest('a'); if (a && a.href) { e.preventDefault(); window.open(a.href, '_blank', 'noopener'); return; }
+  if (e.target.tagName === 'IMG' && e.target.src) openLightbox(e.target.src);
 });
 $('fTag').addEventListener('keydown', e => {
   const n = selNode(); if (!n) return;
