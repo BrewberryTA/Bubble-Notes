@@ -745,18 +745,43 @@ const Store = {
     else setSync('error', 'Sync paused');
   },
   _localTimer: 0,
+  _lsKey(id) { return id === DEFAULT_SPACE ? 'orrery.v1' : 'orrery.v1.' + id; },
+  // Merge what another tab stored into memory (newer updatedAt wins; items this tab deleted stay deleted).
+  // Returns true if memory changed.
+  _mergeStored(id) {
+    if (id !== S.spaceId) return false;
+    let data = null; try { data = JSON.parse(lsGet(this._lsKey(id)) || 'null'); } catch {}
+    if (!data) return false;
+    let changed = false;
+    const pull = (src, map) => {
+      for (const o of Object.values(src || {})) {
+        if (!o || !o.id || S.tomb.has(o.id)) continue;
+        const loc = map.get(o.id);
+        if (loc && (loc.updatedAt || 0) >= (o.updatedAt || 0)) continue;
+        if (map === S.nodes) { o.tags = Array.isArray(o.tags) ? o.tags.slice() : []; if (typeof o.x !== 'number') o.x = 0; if (typeof o.z !== 'number') o.z = 0; }
+        map.set(o.id, o); changed = true;
+        if (map === S.nodes && S.sel && S.sel.id === o.id) refreshPanel(true);
+      }
+    };
+    pull(data.nodes, S.nodes); pull(data.edges, S.edges);
+    return changed;
+  },
+  _writeLocal(id) {
+    this._localTimer = 0;
+    // Never clobber newer data written by another tab: fold it in before saving.
+    if (this._mergeStored(id) && this.onData) this.onData('change');
+    const nodes = {}, edges = {};
+    for (const n of S.nodes.values()) nodes[n.id] = clean(n);
+    for (const e of S.edges.values()) edges[e.id] = clean(e);
+    lsSet(this._lsKey(id), JSON.stringify({ nodes, edges }));
+  },
   _persistLocal() {
     if (this.kind !== 'local') return;
     const id = S.spaceId;
     clearTimeout(this._localTimer);
-    this._localTimer = setTimeout(() => {
-      const nodes = {}, edges = {};
-      for (const n of S.nodes.values()) nodes[n.id] = clean(n);
-      for (const e of S.edges.values()) edges[e.id] = clean(e);
-      lsSet(id === DEFAULT_SPACE ? 'orrery.v1' : 'orrery.v1.' + id, JSON.stringify({ nodes, edges }));
-    }, 300);
+    this._localTimer = setTimeout(() => this._writeLocal(id), 300);
   },
-  flushLocal() { if (this.kind === 'local' && this._localTimer) { clearTimeout(this._localTimer); this._localTimer = 0; const nodes = {}, edges = {}; for (const n of S.nodes.values()) nodes[n.id] = clean(n); for (const e of S.edges.values()) edges[e.id] = clean(e); lsSet(S.spaceId === DEFAULT_SPACE ? 'orrery.v1' : 'orrery.v1.' + S.spaceId, JSON.stringify({ nodes, edges })); } },
+  flushLocal() { if (this.kind === 'local' && this._localTimer) { clearTimeout(this._localTimer); this._writeLocal(S.spaceId); } },
   _persistSpaces() { if (this.kind !== 'local') return; const o = {}; for (const v of S.spaces.values()) o[v.id] = clean(v); lsSet('orrery.spaces', JSON.stringify(o)); },
   saveNode(n, delay) { n.updatedAt = now(); if (this.kind === 'db') this.w.set(`${colNodes(S.spaceId)}/${n.id}`, clean(n), delay); else this._persistLocal(); },
   deleteNode(id) { S.tomb.add(id); if (this.kind === 'db') this.w.del(`${colNodes(S.spaceId)}/${id}`); else this._persistLocal(); },
@@ -1775,6 +1800,11 @@ function restoreView() {
 }
 setInterval(() => { if (spaceBooted) saveView(); }, 1500);
 window.addEventListener('pagehide', () => { saveView(); Store.flushLocal(); });
+// Another tab saved this canvas: pick up its changes instead of overwriting them later.
+window.addEventListener('storage', (ev) => {
+  if (Store.kind !== 'local' || !spaceBooted || ev.key !== Store._lsKey(S.spaceId)) return;
+  if (Store._mergeStored(S.spaceId)) Store.onData('change');
+});
 
 function clearCanvas() {
   select(null); setConnect(false);
