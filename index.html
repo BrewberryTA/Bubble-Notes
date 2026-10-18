@@ -378,6 +378,10 @@
       <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.5 12.5C5 12.5 5 4 12 4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><path d="M9.5 1.8L12.6 4 10 6.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>
       <span class="lbl">Arrow</span>
     </button>
+    <button class="tb" id="fanBtn" aria-pressed="true" title="Fan layout: orbits face you (V)">
+      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="8" r="1.6" fill="currentColor"/><circle cx="8" cy="3.6" r="1.1" fill="currentColor"/><circle cx="12.2" cy="6.6" r="1.1" fill="currentColor"/><circle cx="10.6" cy="11.6" r="1.1" fill="currentColor"/><circle cx="5.4" cy="11.6" r="1.1" fill="currentColor"/><circle cx="3.8" cy="6.6" r="1.1" fill="currentColor"/></svg>
+      <span class="lbl">Fan</span>
+    </button>
     <button class="tb" id="focusBtn" title="Frame everything (F)">
       <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true"><path d="M2 5.5V2h3.5M10.5 2H14v3.5M14 10.5V14h-3.5M5.5 14H2v-3.5" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
       <span class="lbl">Frame</span>
@@ -403,6 +407,7 @@
       <dt>Explode</dt><dd>Double-click / double-tap a note, or <kbd>E</kbd></dd>
       <dt>Fill slot</dt><dd>Click the blue + orbiting the note</dd>
       <dt>New branch</dt><dd>Double-click an exploded note, or <kbd>B</kbd></dd>
+      <dt>Fan or sphere</dt><dd>Fan button, or <kbd>V</kbd>: orbits face you vs fixed 3D slots</dd>
       <dt>Orbit</dt><dd>Drag. Right-drag or two fingers to pan. Twist two fingers to spin.</dd>
       <dt>Snap back</dt><dd><kbd>P</kbd> or the Plane button</dd>
     </dl>
@@ -551,6 +556,36 @@ const SLOTS = (() => {
   }
   return out;
 })();
+/* ---------------- fan layout ----------------
+   Display-only alternative to the fixed sphere. An exploded note's children sit on a
+   sunflower spiral that always faces the camera, ordered by slot, so nothing hides behind
+   its parent and labels stay readable without rotating. Slot data is never changed. */
+let FAN = true; try { FAN = (localStorage.getItem('orrery.fan') || '1') === '1'; } catch {}
+const GOLDEN = Math.PI * (3 - Math.sqrt(5));
+const FAN_R0 = 2.3, FAN_C = 1.55;
+const fanIdx = new Map();   // parentId -> sorted filled slots, rebuilt every frame
+const fanTmp = new THREE.Vector3();
+let fanFocus = null;        // root id whose orbit blooms fully; other orbits stay compact
+function fanSlots(pid) {
+  let a = fanIdx.get(pid);
+  if (!a) { a = (S.children.get(pid) || []).map(k => S.nodes.get(k)).filter(c => c && c.slot != null).map(c => c.slot).sort((x, y) => x - y); fanIdx.set(pid, a); }
+  return a;
+}
+const fanRadius = (i, R) => (FAN_R0 + FAN_C * Math.sqrt(i)) * R;
+const fanExtent = n => fanRadius(Math.max(1, fanSlots(n.id).length), radiusOf(n)) + radiusOf(n) * CHILD_SCALE;
+function slotOffset(p, slot, out) {
+  const R = radiusOf(p);
+  if (!FAN) { const s = SLOTS[slot] || SLOTS[0]; return out.copy(s.dir).multiplyScalar(SHELL_R[s.shell] * R); }
+  const arr = fanSlots(p.id); let i = arr.indexOf(slot); if (i < 0) i = arr.length;
+  const rho = fanRadius(i, R) * (fanFocus && rootOf(p).id !== fanFocus ? 0.4 : 1);
+  let a;
+  const pv = V.get(p.id), gv = p.parentId ? V.get(p.parentId) : null;
+  if (pv && gv) {   // deeper levels open outward, away from the grandparent, in a half-fan
+    fanTmp.subVectors(pv.pos, gv.pos);
+    a = Math.atan2(fanTmp.dot(camU), fanTmp.dot(camR)) + (((i * GOLDEN) % (Math.PI * 2)) - Math.PI) * 0.5;
+  } else a = Math.PI / 2 + i * GOLDEN;
+  return out.copy(camR).multiplyScalar(Math.cos(a) * rho).addScaledVector(camU, Math.sin(a) * rho).addScaledVector(camB, -0.12 * rho);
+}
 const slotName = i => { const s = SLOTS[i]; return `S${s.shell + 1}·${String(s.n + 1).padStart(2, '0')}`; };
 
 /* ---------------- state ---------------- */
@@ -1129,8 +1164,8 @@ function applyCamera() {
 }
 function snapCam() { cam.target.copy(goal.target); cam.dist = goal.dist; cam.phi = goal.phi; cam.theta = goal.theta; }
 function wpp() { return 2 * cam.dist * Math.tan(THREE.MathUtils.degToRad(camera.fov / 2)) / Math.max(canvas.clientHeight, 1); }
-const tmpV = new THREE.Vector3(), tmpV2 = new THREE.Vector3(), camR = new THREE.Vector3(), camU = new THREE.Vector3();
-function camAxes() { camR.setFromMatrixColumn(camera.matrixWorld, 0); camU.setFromMatrixColumn(camera.matrixWorld, 1); }
+const tmpV = new THREE.Vector3(), tmpV2 = new THREE.Vector3(), camR = new THREE.Vector3(), camU = new THREE.Vector3(), camB = new THREE.Vector3(), offV = new THREE.Vector3(), offT = new THREE.Vector3();
+function camAxes() { camR.setFromMatrixColumn(camera.matrixWorld, 0); camU.setFromMatrixColumn(camera.matrixWorld, 1); camB.setFromMatrixColumn(camera.matrixWorld, 2); }
 
 const ray = new THREE.Raycaster();
 const ndc = new THREE.Vector2();
@@ -1210,7 +1245,7 @@ function explode(id, on = true) {
     const v = V.get(id);
     const tgt = targetPos(n, new THREE.Vector3());
     goal.target.copy(tgt);
-    goal.dist = Math.max(14, 24 * radiusOf(n) + 6);
+    goal.dist = FAN ? Math.max(14, fanExtent(n) * 2.6 + 4) : Math.max(14, 24 * radiusOf(n) + 6);
     goal.phi = Math.max(0.75, Math.min(1.15, goal.phi < 0.2 ? PHI_3D : goal.phi));
   }
   refreshPanel();
@@ -1275,8 +1310,7 @@ function targetPos(n, out) {
   const p = S.nodes.get(n.parentId);
   if (!p) return out.set(n.x, 0, n.z);
   targetPos(p, out);
-  const s = SLOTS[n.slot] || SLOTS[0];
-  return out.addScaledVector(s.dir, SHELL_R[s.shell] * radiusOf(p));
+  return out.add(slotOffset(p, n.slot, offT));
 }
 function frameAll() {
   const box = new THREE.Box3(); let any = false;
@@ -1360,6 +1394,18 @@ function frame(t) {
 
   const selId = S.sel && S.sel.type === 'node' ? S.sel.id : null;
   const labelsOn = [];
+  fanIdx.clear();
+  // in 3D, a selected note quiets every other tree so its own orbit is easy to read
+  const selN = selId && S.nodes.get(selId);
+  let focusRoot = S.mode === '3d' && selN ? rootOf(selN).id : null;
+  // with nothing selected, the exploded note nearest the view centre blooms (fan layout only)
+  let soft = false;
+  if (!focusRoot && S.mode === '3d' && FAN) {
+    let best = 12;
+    for (const n of S.nodes.values()) if (!n.parentId && n.exploded) { const dd = Math.hypot(n.x - cam.target.x, n.z - cam.target.z); if (dd < best) { best = dd; focusRoot = n.id; } }
+    soft = true;
+  }
+  fanFocus = FAN ? focusRoot : null;
 
   // nodes (parents first so children follow their animated parent)
   for (const id of S.order) {
@@ -1369,7 +1415,7 @@ function frame(t) {
     let targetS;
     if (shown) {
       if (!n.parentId) tgtV.set(n.x, S.mode === '3d' ? LIFT_3D : 0, n.z);
-      else { const pv = V.get(n.parentId); const s = SLOTS[n.slot] || SLOTS[0]; const p = S.nodes.get(n.parentId); tgtV.copy(pv.pos).addScaledVector(s.dir, SHELL_R[s.shell] * radiusOf(p) * Math.max(pv.s, 0.001)); }
+      else { const pv = V.get(n.parentId); const p = S.nodes.get(n.parentId); slotOffset(p, n.slot, offV); tgtV.copy(pv.pos).addScaledVector(offV, Math.max(pv.s, 0.001)); }
       targetS = 1;
     } else {
       const pv = V.get(n.parentId); tgtV.copy(pv ? pv.pos : v.pos); targetS = 0;
@@ -1377,7 +1423,8 @@ function frame(t) {
     if (drag.nodeId === id) v.pos.copy(tgtV); else v.pos.lerp(tgtV, k);
     v.s += (targetS - v.s) * k; if (Math.abs(targetS - v.s) < 0.001) v.s = targetS;
     v.flat += (flatGoal - v.flat) * k;
-    const m = matches(n); v.dim += ((m ? 1 : 0.18) - v.dim) * k;
+    const m = matches(n), outF = !!focusRoot && rootOf(n).id !== focusRoot;
+    v.dim += ((m ? 1 : 0.18) * (outF ? (n.parentId ? (soft ? 0.45 : 0.22) : (soft ? 0.85 : 0.6)) : 1) - v.dim) * k;
 
     const sc = Math.max(v.s, 0.0001) * r;
     const vis = v.s > 0.01;
@@ -1420,7 +1467,7 @@ function frame(t) {
     tmpV.copy(v.pos).addScaledVector(camR, sc); toScreen(tmpV, scr2);
     const sr = Math.hypot(scr2.x - scr.x, scr2.y - scr.y);
     const behind = scr.z > 1;
-    const lv = vis && !behind && sr > 6;
+    const lv = vis && !behind && sr > 6 && !(outF && n.parentId && !isHov && !isSel);
     if (lv) {
       const title = n.title || 'Untitled';
       if (v.lastT !== title) { v.lt.textContent = title; v.lastT = title; }
@@ -1438,18 +1485,30 @@ function frame(t) {
       v.label.style.zIndex = String(1000 - Math.round(scr.z * 900));
       v.label.classList.toggle('sel', isSel);
       v.label.hidden = false;
-      labelsOn.push(v);
+      const d = depthOf(n), w = Math.min(title.length, 22) * fs * 0.56 + 14, h = fs * 1.45 + (meta ? 13 : 0) + (pl ? 16 : 0);
+      labelsOn.push({ v, x: scr.x, y: scr.y + yOff, w, h, pri: (isSel ? 1e9 : 0) + (isHov ? 1e8 : 0) + (m ? 1e7 : 0) + (outF ? 0 : 1e6) + (d === 0 ? 1e5 : d === 1 ? 5e4 : 0) + (1 - scr.z) * 1e3 });
     } else v.label.hidden = true;
+  }
+
+  // label declutter: higher-priority labels win, overlapped ones hide until you hover or select
+  labelsOn.sort((a, b) => b.pri - a.pri);
+  const placed = [];
+  for (const L of labelsOn) {
+    const l = L.x - L.w / 2, r = L.x + L.w / 2, t = L.y, b = L.y + L.h;
+    let hit = false;
+    for (const q of placed) if (l < q[1] && r > q[0] && t < q[3] && b > q[2]) { hit = true; break; }
+    L.v.label.style.visibility = hit ? 'hidden' : '';
+    if (!hit) placed.push([l, r, t, b]);
   }
 
   // ghosts
   for (const [pid, g] of GV) if (!S.ghosts.has(pid)) { g.s += (0 - g.s) * k; if (g.s < 0.01) dropGhost(pid); }
   for (const [pid, slot] of S.ghosts) {
     const p = S.nodes.get(pid), pv = V.get(pid); if (!p || !pv) continue;
-    const show = S.mode === '3d' && isShown(p) && p.exploded && pv.s > 0.5;
+    const show = S.mode === '3d' && isShown(p) && p.exploded && pv.s > 0.5 && !(fanFocus && rootOf(p).id !== fanFocus);
     const g = ghostVisual(pid);
     const pr = radiusOf(p), r = pr * CHILD_SCALE, sd = SLOTS[slot];
-    tgtV.copy(pv.pos).addScaledVector(sd.dir, SHELL_R[sd.shell] * pr);
+    tgtV.copy(pv.pos).add(slotOffset(p, slot, offV));
     if (!g.pos || g.slot !== slot) { if (!g.pos) g.pos = pv.pos.clone(); g.slot = slot; g.small.textContent = slotName(slot); }
     g.pos.lerp(tgtV, k);
     g.s += ((show ? 1 : 0) - g.s) * k;
@@ -1711,6 +1770,7 @@ window.addEventListener('keydown', e => {
   switch (e.key.toLowerCase()) {
     case 'p': setMode('2d'); break;
     case 'o': setMode('3d'); break;
+    case 'v': setFan(!FAN); break;
     case 'n': { const p = planePoint(canvas.clientWidth / 2 + canvas.getBoundingClientRect().left, canvas.clientHeight / 2 + canvas.getBoundingClientRect().top, 0) || cam.target; createRoot(p.x, p.z); e.preventDefault(); break; }
     case 'l': setConnect(!S.connect.on, selNode); break;
     case 'f': if (selNode) focusNode(selNode); else frameAll(); break;
@@ -1731,6 +1791,13 @@ m3d.onclick = () => setMode('3d');
 $('addBtn').onclick = () => { const r = canvas.getBoundingClientRect(); const p = planePoint(r.left + r.width / 2, r.top + r.height / 2, 0) || cam.target; if (S.mode === '3d') setMode('2d'); createRoot(p.x, p.z); };
 $('linkBtn').onclick = () => setConnect(!S.connect.on, S.sel && S.sel.type === 'node' ? S.sel.id : null);
 $('focusBtn').onclick = () => frameAll();
+function setFan(on) {
+  FAN = on; try { localStorage.setItem('orrery.fan', on ? '1' : '0'); } catch {}
+  $('fanBtn').setAttribute('aria-pressed', String(on));
+  toast(on ? 'Fan layout: orbits face you' : 'Sphere layout: fixed 3D slots');
+}
+$('fanBtn').setAttribute('aria-pressed', String(FAN));
+$('fanBtn').onclick = () => setFan(!FAN);
 $('helpBtn').onclick = () => toggleHelp();
 function toggleHelp(force) { const show = force != null ? force : helpEl.hidden; helpEl.hidden = !show; $('helpBtn').setAttribute('aria-expanded', show); }
 
