@@ -1098,8 +1098,12 @@ function makeVisual(n) {
 /* label helpers: first sentence of a note's body, and how many notes sit inside it */
 function summaryOf(html) {
   if (!html) return '';
-  const tmp = document.createElement('div'); tmp.innerHTML = String(html).replace(/<\/(p|li|div|h\d)>/gi, ' </$1>');
-  let t = (tmp.textContent || '').replace(/\s+/g, ' ').trim();
+  const tmp = document.createElement('div'); tmp.innerHTML = String(html);
+  // paragraphs in order; skip short metadata lines like "Sep 8, 2025 · Part 3 of 3 · about 1,360 words"
+  const blocks = [...tmp.querySelectorAll('p, li, h1, h2, h3, h4')].map(e => (e.textContent || '').replace(/\s+/g, ' ').trim()).filter(Boolean);
+  if (!blocks.length) blocks.push((tmp.textContent || '').replace(/\s+/g, ' ').trim());
+  const isMeta = x => x.length < 140 && (x.match(/ · /g) || []).length >= 1 && /\d/.test(x) && !/[.!?]$/.test(x);
+  let t = blocks.find(x => x && !isMeta(x)) || blocks[0] || '';
   if (!t) return '';
   const m = t.match(/^(.{20,}?[.!?])(\s|$)/);
   if (m) t = m[1];
