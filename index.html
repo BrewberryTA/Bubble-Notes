@@ -1665,7 +1665,7 @@ function frame(t) {
     if (h.key !== key) {
       h.key = key; tmpV.divideScalar(L);
       const a = pv.pos.clone().addScaledVector(tmpV, pr), b = cv.pos.clone().addScaledVector(tmpV, -cr);
-      const curve = new THREE.LineCurve3(a, b), rad = 0.03 * Math.min(1, Math.max(0.5, (pr + cr) / 2));
+      const curve = new THREE.LineCurve3(a, b), rad = 0.055 * Math.min(1, Math.max(0.6, (pr + cr) / 2));
       h.tube.geometry.dispose(); h.tube.geometry = new THREE.TubeGeometry(curve, 24, rad, 8, false);
       h.glow.geometry.dispose(); h.glow.geometry = new THREE.TubeGeometry(curve, 24, rad * 5, 10, false);
       const len = Math.max(curve.getLength(), 0.1); h.mat.uniforms.uLen.value = Math.max(len, 5); h.glowMat.uniforms.uLen.value = Math.max(len, 5);
