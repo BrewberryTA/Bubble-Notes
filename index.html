@@ -51,6 +51,12 @@
     background: color-mix(in srgb, var(--bg) 78%, transparent); padding: 1px 6px; border-radius: 6px;
   }
   .nl-m { font-family: var(--mono); font-size: 10px; color: var(--muted); letter-spacing: .02em; }
+  /* 2D: one-line summary of what's inside the note */
+  .nl-s {
+    font-size: 11px; line-height: 1.3; color: var(--ink-2, #3B4252); max-width: 30ch; white-space: normal; text-align: center;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+    background: color-mix(in srgb, var(--bg) 78%, transparent); padding: 0 6px 1px; border-radius: 6px;
+  }
   .nl.sel .nl-t { color: var(--accent); }
   .ghost-plus {
     position: absolute; left: 0; top: 0; display: grid; place-items: center;
@@ -1076,7 +1082,7 @@ function makeVisual(n) {
   shadow.renderOrder = 0;
   scene.add(mesh, ring, rim, shadow);
   const label = document.createElement('div'); label.className = 'nl';
-  label.innerHTML = '<div class="nl-t"></div><div class="nl-m"></div><button class="nl-p" hidden></button>';
+  label.innerHTML = '<div class="nl-t"></div><div class="nl-s" hidden></div><div class="nl-m"></div><button class="nl-p" hidden></button>';
   labelsEl.appendChild(label);
   const chip = label.lastChild;
   chip.addEventListener('pointerdown', e => e.stopPropagation());
@@ -1085,10 +1091,21 @@ function makeVisual(n) {
   const start = p && V.get(p.id) ? V.get(p.id).pos.clone() : new THREE.Vector3(n.x, 0, n.z);
   const portal = new THREE.Mesh(RING_THIN, new THREE.MeshBasicMaterial({ color: ACCENT, transparent: true, opacity: 0, depthWrite: false, side: THREE.DoubleSide }));
   scene.add(portal);
-  const v = { mesh, ring, rim, shadow, portal, chip, lastP: null, label, lt: label.firstChild, lm: label.children[1], pos: start, s: n.parentId ? 0 : 0.001, flat: S.mode === '2d' ? 1 : 0, lastColor: n.color, lastT: null, lastM: null, dim: 1 };
+  const v = { mesh, ring, rim, shadow, portal, chip, lastP: null, label, lt: label.firstChild, ls: label.children[1], lm: label.children[2], lastS: null, sumSrc: null, sum: '', pos: start, s: n.parentId ? 0 : 0.001, flat: S.mode === '2d' ? 1 : 0, lastColor: n.color, lastT: null, lastM: null, dim: 1 };
   V.set(n.id, v); pickables.push(mesh);
   return v;
 }
+/* label helpers: first sentence of a note's body, and how many notes sit inside it */
+function summaryOf(html) {
+  if (!html) return '';
+  const tmp = document.createElement('div'); tmp.innerHTML = String(html).replace(/<\/(p|li|div|h\d)>/gi, ' </$1>');
+  let t = (tmp.textContent || '').replace(/\s+/g, ' ').trim();
+  if (!t) return '';
+  const m = t.match(/^(.{20,}?[.!?])(\s|$)/);
+  if (m) t = m[1];
+  return t.length > 64 ? t.slice(0, 62).replace(/\s+\S*$/, '') + '…' : t;
+}
+function countDescendants(id) { return descendants(id).length; }
 function dropVisual(id) {
   const v = V.get(id); if (!v) return;
   scene.remove(v.mesh, v.ring, v.rim, v.shadow, v.portal); v.portal.material.dispose();
@@ -1472,7 +1489,14 @@ function frame(t) {
       const title = n.title || 'Untitled';
       if (v.lastT !== title) { v.lt.textContent = title; v.lastT = title; }
       const kids = (S.children.get(id) || []).length;
-      const meta = n.exploded && S.mode === '3d' ? `${kids}/${SLOT_COUNT} in orbit` : kids ? `${kids} in orbit` : '';
+      let meta;
+      if (S.mode === '3d') meta = n.exploded ? `${kids}/${SLOT_COUNT} in orbit` : kids ? `${kids} in orbit` : '';
+      else { const tot = kids ? countDescendants(id) : 0; meta = kids ? `${kids} inside` + (tot > kids ? ` · ${tot} total` : '') : ''; }
+      // 2D summary: first sentence of the body, shown when there is room to read it
+      if (v.sumSrc !== n.body) { v.sumSrc = n.body; v.sum = summaryOf(n.body); }
+      const showSum = S.mode === '2d' && !!v.sum && (sr >= 13 || isHov || isSel);
+      const sumTxt = showSum ? v.sum : '';
+      if (v.lastS !== sumTxt) { v.ls.textContent = sumTxt; v.ls.hidden = !sumTxt; v.lastS = sumTxt; }
       if (v.lastM !== meta) { v.lm.textContent = meta; v.lm.hidden = !meta; v.lastM = meta; }
       const pl = isPortal ? '↗ ' + spaceName(n.portal) : '';
       if (v.lastP !== pl) { v.chip.textContent = pl; v.chip.hidden = !pl; v.chip.title = pl ? 'Open canvas ' + spaceName(n.portal) : ''; v.lastP = pl; }
@@ -1485,7 +1509,8 @@ function frame(t) {
       v.label.style.zIndex = String(1000 - Math.round(scr.z * 900));
       v.label.classList.toggle('sel', isSel);
       v.label.hidden = false;
-      const d = depthOf(n), w = Math.min(title.length, 22) * fs * 0.56 + 14, h = fs * 1.45 + (meta ? 13 : 0) + (pl ? 16 : 0);
+      const sumW = sumTxt ? Math.min(sumTxt.length, 30) * 6.1 + 12 : 0, sumH = sumTxt ? (sumTxt.length > 30 ? 30 : 16) : 0;
+      const d = depthOf(n), w = Math.max(Math.min(title.length, 22) * fs * 0.56 + 14, sumW), h = fs * 1.45 + sumH + (meta ? 13 : 0) + (pl ? 16 : 0);
       labelsOn.push({ v, x: scr.x, y: scr.y + yOff, w, h, pri: (isSel ? 1e9 : 0) + (isHov ? 1e8 : 0) + (m ? 1e7 : 0) + (outF ? 0 : 1e6) + (d === 0 ? 1e5 : d === 1 ? 5e4 : 0) + (1 - scr.z) * 1e3 });
     } else v.label.hidden = true;
   }
