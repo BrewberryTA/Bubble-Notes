@@ -1150,19 +1150,60 @@ autoLines.frustumCulled = false; scene.add(autoLines);
 
 const EV = new Map();
 const HEAD = new THREE.ConeGeometry(0.16, 0.44, 24).translate(0, -0.22, 0);
-const edgeMatN = () => new THREE.MeshStandardMaterial({ color: 0x3B5BFD, roughness: 0.5, metalness: 0, transparent: true, opacity: 0.9 });
+/* Arrows are "light lines": an idle soft blue tube that, when its note is selected or hovered,
+   brightens to an electric core with a soft glow around it and pulses of light running
+   from source to target (so the direction reads at a glance). */
+const EDGE_IDLE = new THREE.Color('#7E95F2'), EDGE_LIT = new THREE.Color('#1F5BFF'), EDGE_HOT = new THREE.Color('#E9F7FF'), EDGE_GLOW = new THREE.Color('#2F7BFF');
+const edgeCoreMat = () => new THREE.ShaderMaterial({
+  transparent: true,
+  uniforms: { uColor: { value: EDGE_IDLE.clone() }, uHot: { value: EDGE_HOT }, uLit: { value: 0 }, uTime: { value: 0 }, uLen: { value: 10 }, uOpacity: { value: 0.8 } },
+  vertexShader: `varying vec2 vUv; varying vec3 vN; varying vec3 vV;
+    void main(){ vUv = uv; vec4 mv = modelViewMatrix * vec4(position, 1.0); vN = normalize(normalMatrix * normal); vV = normalize(-mv.xyz); gl_Position = projectionMatrix * mv; }`,
+  fragmentShader: `varying vec2 vUv; varying vec3 vN; varying vec3 vV;
+    uniform vec3 uColor; uniform vec3 uHot; uniform float uLit; uniform float uTime; uniform float uLen; uniform float uOpacity;
+    void main(){
+      float trains = max(1.0, floor(uLen / 5.0));
+      float p = fract(vUv.x * trains - uTime * 0.55);
+      float packet = smoothstep(0.55, 0.97, p) * (1.0 - smoothstep(0.97, 1.0, p)) + 0.25 * pow(p, 2.0);
+      float rim = abs(dot(vN, vV));                       // bright centre line, slightly darker edges: reads as a lit filament
+      vec3 c = uColor * (0.78 + 0.32 * rim);
+      c = mix(c, uHot, clamp(uLit * packet * 1.1, 0.0, 0.92));
+      c = mix(c, vec3(1.0), uLit * 0.35 * pow(rim, 6.0));  // hot white core while lit
+      gl_FragColor = vec4(c, uOpacity);
+    }`,
+});
+const edgeGlowMat = () => new THREE.ShaderMaterial({
+  transparent: true, depthWrite: false,
+  uniforms: { uColor: { value: EDGE_GLOW }, uLit: { value: 0 }, uTime: { value: 0 }, uLen: { value: 10 } },
+  vertexShader: `varying vec2 vUv; varying vec3 vN; varying vec3 vV;
+    void main(){ vUv = uv; vec4 mv = modelViewMatrix * vec4(position, 1.0); vN = normalize(normalMatrix * normal); vV = normalize(-mv.xyz); gl_Position = projectionMatrix * mv; }`,
+  fragmentShader: `varying vec2 vUv; varying vec3 vN; varying vec3 vV;
+    uniform vec3 uColor; uniform float uLit; uniform float uTime; uniform float uLen;
+    void main(){
+      float trains = max(1.0, floor(uLen / 5.0));
+      float p = fract(vUv.x * trains - uTime * 0.55);
+      float fall = pow(abs(dot(vN, vV)), 2.2);              // soft falloff toward the halo's edge
+      float pk = smoothstep(0.5, 0.97, p) * (1.0 - smoothstep(0.97, 1.0, p));
+      float a = uLit * fall * (0.26 + 0.5 * pk);
+      if (a < 0.003) discard;
+      gl_FragColor = vec4(uColor, a);
+    }`,
+});
 function edgeVisual(id) {
   let e = EV.get(id); if (e) return e;
-  const mat = edgeMatN();
+  const mat = edgeCoreMat(), glowMat = edgeGlowMat();
+  const headMat = new THREE.MeshBasicMaterial({ color: EDGE_IDLE.clone(), transparent: true, opacity: 0.8 });
   const tube = new THREE.Mesh(new THREE.BufferGeometry(), mat);
-  const head = new THREE.Mesh(HEAD, mat);
+  const glow = new THREE.Mesh(new THREE.BufferGeometry(), glowMat); glow.renderOrder = 1;
+  const head = new THREE.Mesh(HEAD, headMat);
+  tube.renderOrder = head.renderOrder = 3; // core draws over its halo so the light stays white
   tube.userData = head.userData = { kind: 'edge', id };
-  scene.add(tube, head); pickables.push(tube, head);
-  e = { tube, head, mat, key: '' }; EV.set(id, e); return e;
+  scene.add(glow, tube, head); pickables.push(tube, head);
+  e = { tube, glow, head, mat, glowMat, headMat, key: '', lit: 0 }; EV.set(id, e); return e;
 }
 function dropEdge(id) {
   const e = EV.get(id); if (!e) return;
-  scene.remove(e.tube, e.head); e.tube.geometry.dispose(); e.mat.dispose();
+  scene.remove(e.tube, e.head, e.glow); e.tube.geometry.dispose(); e.glow.geometry.dispose(); e.mat.dispose(); e.glowMat.dispose(); e.headMat.dispose();
   for (const m of [e.tube, e.head]) { const i = pickables.indexOf(m); if (i >= 0) pickables.splice(i, 1); }
   EV.delete(id);
 }
@@ -1415,6 +1456,21 @@ function frame(t) {
 
   const selId = S.sel && S.sel.type === 'node' ? S.sel.id : null;
   const labelsOn = [];
+  // connector lighting: the selected (or hovered) note plus everything inside it
+  const hovId = S.hover && S.hover.kind === 'node' ? S.hover.id : null;
+  const litFocus = selId || hovId;
+  const litSet = new Set();
+  if (litFocus && S.nodes.has(litFocus)) { litSet.add(litFocus); for (const d of descendants(litFocus)) litSet.add(d); }
+  const selEdgeId = S.sel && S.sel.type === 'edge' ? S.sel.id : null, hovEdgeId = S.hover && S.hover.kind === 'edge' ? S.hover.id : null;
+  const litEdges = new Set(), litEnds = new Set();
+  for (const e of S.edges.values()) {
+    if (litSet.has(e.from) || litSet.has(e.to) || e.id === selEdgeId || e.id === hovEdgeId) {
+      litEdges.add(e.id);
+      const a = visibleAncestor(e.from), b = visibleAncestor(e.to);
+      if (a) litEnds.add(a.id); if (b) litEnds.add(b.id);
+    }
+  }
+  const anyLit = litEdges.size > 0;
   fanIdx.clear();
   // in 3D, a selected note quiets every other tree so its own orbit is easy to read
   const selN = selId && S.nodes.get(selId);
@@ -1445,7 +1501,9 @@ function frame(t) {
     v.s += (targetS - v.s) * k; if (Math.abs(targetS - v.s) < 0.001) v.s = targetS;
     v.flat += (flatGoal - v.flat) * k;
     const m = matches(n), outF = !!focusRoot && rootOf(n).id !== focusRoot;
-    v.dim += ((m ? 1 : 0.18) * (outF ? (n.parentId ? (soft ? 0.45 : 0.22) : (soft ? 0.85 : 0.6)) : 1) - v.dim) * k;
+    const isEnd = litEnds.has(id) && id !== litFocus;
+    const dimGoal = (m ? 1 : 0.18) * (outF ? (n.parentId ? (soft ? 0.45 : 0.22) : (soft ? 0.85 : 0.6)) : 1);
+    v.dim += ((isEnd ? Math.max(dimGoal, 0.9) : dimGoal) - v.dim) * k;
 
     const sc = Math.max(v.s, 0.0001) * r;
     const vis = v.s > 0.01;
@@ -1458,7 +1516,7 @@ function frame(t) {
 
     // rings face the camera
     const isSel = selId === id, isHov = S.hover && S.hover.kind === 'node' && S.hover.id === id, isSrc = S.connect.from === id;
-    const ringA = isSel || isSrc ? 1 : isHov ? 0.35 : 0;
+    const ringA = isSel || isSrc ? 1 : isEnd ? 0.55 : isHov ? 0.35 : 0;
     v.ring.material.opacity += (ringA * v.dim - v.ring.material.opacity) * k;
     v.ring.visible = vis && v.ring.material.opacity > 0.01;
     v.ring.position.copy(v.pos); v.ring.quaternion.copy(camera.quaternion); v.ring.scale.setScalar(sc);
@@ -1515,7 +1573,7 @@ function frame(t) {
       v.label.hidden = false;
       const sumW = sumTxt ? Math.min(sumTxt.length, 30) * 6.1 + 12 : 0, sumH = sumTxt ? (sumTxt.length > 30 ? 30 : 16) : 0;
       const d = depthOf(n), w = Math.max(Math.min(title.length, 22) * fs * 0.56 + 14, sumW), h = fs * 1.45 + sumH + (meta ? 13 : 0) + (pl ? 16 : 0);
-      labelsOn.push({ v, x: scr.x, y: scr.y + yOff, w, h, pri: (isSel ? 1e9 : 0) + (isHov ? 1e8 : 0) + (m ? 1e7 : 0) + (outF ? 0 : 1e6) + (d === 0 ? 1e5 : d === 1 ? 5e4 : 0) + (1 - scr.z) * 1e3 });
+      labelsOn.push({ v, x: scr.x, y: scr.y + yOff, w, h, pri: (isSel ? 1e9 : 0) + (isHov ? 1e8 : 0) + (isEnd ? 5e7 : 0) + (m ? 1e7 : 0) + (outF ? 0 : 1e6) + (d === 0 ? 1e5 : d === 1 ? 5e4 : 0) + (1 - scr.z) * 1e3 });
     } else v.label.hidden = true;
   }
 
@@ -1588,9 +1646,16 @@ function frame(t) {
     const flat = va.flat;
     const key = [va.pos.x, va.pos.y, va.pos.z, vb.pos.x, vb.pos.y, vb.pos.z, ra, rb, flat].map(x => x.toFixed(3)).join(',');
     const dimA = Math.min(va.dim, vb.dim);
-    ev.mat.opacity = (proxied ? 0.45 : 0.9) * dimA;
-    ev.mat.color.set(selEdge === e.id ? 0x1E36C9 : S.hover && S.hover.kind === 'edge' && S.hover.id === e.id ? 0x2E4CE6 : 0x3B5BFD);
+    const isLit = litEdges.has(e.id);
+    ev.lit += ((isLit ? 1 : 0) - ev.lit) * Math.min(1, k * 1.6);
+    const idleOp = (proxied ? 0.4 : 0.75) * dimA * (anyLit && !isLit ? 0.22 : 1);
+    const op = idleOp + (0.98 - idleOp) * ev.lit;
+    ev.mat.uniforms.uColor.value.copy(EDGE_IDLE).lerp(EDGE_LIT, ev.lit);
+    ev.mat.uniforms.uLit.value = ev.lit; ev.mat.uniforms.uTime.value = t / 1000; ev.mat.uniforms.uOpacity.value = op;
+    ev.glowMat.uniforms.uLit.value = ev.lit; ev.glowMat.uniforms.uTime.value = t / 1000;
+    ev.headMat.color.copy(ev.mat.uniforms.uColor.value); ev.headMat.opacity = op;
     ev.tube.visible = ev.head.visible = true;
+    ev.glow.visible = ev.lit > 0.02;
     if (ev.key === key) continue;
     ev.key = key;
     const A = va.pos, B = vb.pos;
@@ -1600,8 +1665,11 @@ function frame(t) {
     const end = B.clone().addScaledVector(d, -rb * 1.1);
     const mid = start.clone().add(end).multiplyScalar(0.5).addScaledVector(perp, L * 0.1).add(new THREE.Vector3(0, L * 0.12 * (1 - flat), 0));
     const curve = new THREE.QuadraticBezierCurve3(start, mid, end);
-    const tub = new THREE.TubeGeometry(curve, 40, 0.045 * Math.min(1, Math.max(0.55, (ra + rb) / 2)), 10, false);
+    const rad = 0.045 * Math.min(1, Math.max(0.55, (ra + rb) / 2));
+    const tub = new THREE.TubeGeometry(curve, 48, rad, 10, false);
     ev.tube.geometry.dispose(); ev.tube.geometry = tub;
+    ev.glow.geometry.dispose(); ev.glow.geometry = new THREE.TubeGeometry(curve, 48, rad * 5, 12, false);
+    const clen = curve.getLength(); ev.mat.uniforms.uLen.value = clen; ev.glowMat.uniforms.uLen.value = clen;
     const tan = curve.getTangent(1);
     ev.head.position.copy(end);
     ev.head.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), tan);
