@@ -1201,6 +1201,19 @@ function edgeVisual(id) {
   scene.add(glow, tube, head); pickables.push(tube, head);
   e = { tube, glow, head, mat, glowMat, headMat, key: '', lit: 0 }; EV.set(id, e); return e;
 }
+const HV = new Map(); // child id -> lit parent→child link
+function hierVisual(id) {
+  let h = HV.get(id); if (h) return h;
+  const mat = edgeCoreMat(), glowMat = edgeGlowMat();
+  const tube = new THREE.Mesh(new THREE.BufferGeometry(), mat); tube.renderOrder = 3;
+  const glow = new THREE.Mesh(new THREE.BufferGeometry(), glowMat); glow.renderOrder = 1;
+  scene.add(glow, tube);
+  h = { tube, glow, mat, glowMat, key: '', lit: 0 }; HV.set(id, h); return h;
+}
+function dropHier(id) {
+  const h = HV.get(id); if (!h) return;
+  scene.remove(h.tube, h.glow); h.tube.geometry.dispose(); h.glow.geometry.dispose(); h.mat.dispose(); h.glowMat.dispose(); HV.delete(id);
+}
 function dropEdge(id) {
   const e = EV.get(id); if (!e) return;
   scene.remove(e.tube, e.head, e.glow); e.tube.geometry.dispose(); e.glow.geometry.dispose(); e.mat.dispose(); e.glowMat.dispose(); e.headMat.dispose();
@@ -1470,7 +1483,13 @@ function frame(t) {
       if (a) litEnds.add(a.id); if (b) litEnds.add(b.id);
     }
   }
-  const anyLit = litEdges.size > 0;
+  const hierPairs = [];
+  if (litFocus && S.nodes.has(litFocus)) {
+    let c = S.nodes.get(litFocus);
+    while (c && c.parentId && S.nodes.has(c.parentId)) { hierPairs.push([c.parentId, c.id]); litEnds.add(c.parentId); c = S.nodes.get(c.parentId); }
+    for (const d of descendants(litFocus)) { const dn = S.nodes.get(d); if (dn && dn.parentId) { hierPairs.push([dn.parentId, d]); litEnds.add(d); } }
+  }
+  const anyLit = litEdges.size > 0 || hierPairs.length > 0;
   fanIdx.clear();
   // in 3D, a selected note quiets every other tree so its own orbit is easy to read
   const selN = selId && S.nodes.get(selId);
@@ -1633,6 +1652,33 @@ function frame(t) {
     ap[cnt++] = v.pos.x - tmpV.x * cr; ap[cnt++] = v.pos.y - tmpV.y * cr; ap[cnt++] = v.pos.z - tmpV.z * cr;
   }
   autoGeo.setDrawRange(0, cnt / 3); autoGeo.attributes.position.needsUpdate = true;
+
+  // lit family links: the focused note's chain up to its top-level note, and everything inside it
+  const hierOn = new Set();
+  for (const [pid, cid] of hierPairs) {
+    const pv = V.get(pid), cv = V.get(cid); if (!pv || !cv || pv.s < 0.05 || cv.s < 0.05) continue;
+    const pr = radiusOf(S.nodes.get(pid)) * pv.s, cr = radiusOf(S.nodes.get(cid)) * cv.s;
+    tmpV.subVectors(cv.pos, pv.pos); const L = tmpV.length(); if (L < pr + cr + 0.05) continue;
+    hierOn.add(cid);
+    const h = hierVisual(cid);
+    const key = [pv.pos.x, pv.pos.y, pv.pos.z, cv.pos.x, cv.pos.y, cv.pos.z, pr, cr].map(x => x.toFixed(3)).join(',');
+    if (h.key !== key) {
+      h.key = key; tmpV.divideScalar(L);
+      const a = pv.pos.clone().addScaledVector(tmpV, pr), b = cv.pos.clone().addScaledVector(tmpV, -cr);
+      const curve = new THREE.LineCurve3(a, b), rad = 0.03 * Math.min(1, Math.max(0.5, (pr + cr) / 2));
+      h.tube.geometry.dispose(); h.tube.geometry = new THREE.TubeGeometry(curve, 24, rad, 8, false);
+      h.glow.geometry.dispose(); h.glow.geometry = new THREE.TubeGeometry(curve, 24, rad * 5, 10, false);
+      const len = Math.max(curve.getLength(), 0.1); h.mat.uniforms.uLen.value = Math.max(len, 5); h.glowMat.uniforms.uLen.value = Math.max(len, 5);
+    }
+  }
+  for (const [cid, h] of HV) {
+    h.lit += ((hierOn.has(cid) ? 1 : 0) - h.lit) * Math.min(1, k * 1.6);
+    if (h.lit < 0.02 && !hierOn.has(cid)) { dropHier(cid); continue; }
+    h.mat.uniforms.uColor.value.copy(EDGE_IDLE).lerp(EDGE_LIT, h.lit);
+    h.mat.uniforms.uLit.value = h.lit; h.mat.uniforms.uTime.value = t / 1000; h.mat.uniforms.uOpacity.value = 0.95 * h.lit;
+    h.glowMat.uniforms.uLit.value = h.lit; h.glowMat.uniforms.uTime.value = t / 1000;
+    h.tube.visible = h.glow.visible = true;
+  }
 
   // manual arrows
   const selEdge = S.sel && S.sel.type === 'edge' ? S.sel.id : null;
